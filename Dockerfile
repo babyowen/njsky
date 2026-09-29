@@ -32,6 +32,9 @@ RUN npm ci --no-audit --no-fund
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+# 构建期页面数据收集会初始化 SQLite；指向构建专用临时库，避免与运行库/多worker抢锁。
+# 该临时文件不进入最终镜像（运行层不拷贝 /tmp）。
+ENV DB_PATH=/tmp/build-njsky.db
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

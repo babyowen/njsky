@@ -80,6 +80,10 @@ function createDb(): Database.Database {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const d = new Database(dbPath)
   d.pragma('journal_mode = WAL')
+  // 多进程（含 Next 构建期的 page-data worker）可能同时初始化同一库，
+  // 设置 busy_timeout 让锁等待而非立即报 SQLITE_BUSY。
+  d.pragma('busy_timeout = 5000')
+  d.pragma('synchronous = NORMAL')
 
   d.exec(`
 CREATE TABLE IF NOT EXISTS events (
