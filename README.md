@@ -81,7 +81,13 @@ curl -X POST -H 'x-admin-key: 你的ADMIN_SECRET' http://localhost:3002/api/admi
 1. 打开[飞书开发者后台](https://open.feishu.cn/app) → 你的自建应用 →「凭证与基础信息」，复制 **App ID** 和 **App Secret**
 2. 应用「权限管理」开通 **`im:message`**（以应用身份发消息）；bot 给自己发单聊无需用户授权
 3. 把三个值填入 `.env.local`：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_USER_ID`（接收人 open_id）
-4. 测试：`npx tsx --env-file-if-exists=.env.local scripts/push-test.ts`，返回 `{"ok":true}` 即通
+4. 测试：
+   - 本地开发：`npx tsx --env-file-if-exists=.env.local scripts/push-test.ts`
+   - 服务器/Docker（scripts 不进镜像，用 admin API）：
+     ```bash
+     curl -X POST -H "x-admin-key: 你的ADMIN_SECRET" http://127.0.0.1:3002/api/admin/push-test
+     ```
+   返回 `{"ok":true}` 即通
 
 > bot 身份用 appId+appSecret 自动换取 tenant_access_token（进程内缓存 2 小时、失效自动重取），**不会像 user OAuth 那样过期**，适合服务器长期运行。
 
