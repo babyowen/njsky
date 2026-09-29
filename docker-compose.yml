@@ -1,0 +1,29 @@
+# 单个服务：网站 + 内置调度器同进程运行
+# 用法：docker compose up -d --build
+services:
+  njsky:
+    build:
+      context: .
+    image: njsky:latest
+    container_name: njsky
+    restart: unless-stopped
+
+    # 只绑定到宿主机回环地址，由宝塔 nginx 反向代理对外（更安全）
+    # 若不用宝塔，改成 "3002:3002" 直接对外
+    ports:
+      - "127.0.0.1:3002:3002"
+
+    # 环境变量从 .env.local 读取（该文件放在本目录，不进 git）
+    env_file:
+      - .env.local
+
+    # SQLite 数据持久化到宿主机目录（宝塔文件管理器可直接查看/备份）
+    volumes:
+      - ./data:/app/data
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

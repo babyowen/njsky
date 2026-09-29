@@ -1,0 +1,15 @@
+# 构建上下文排除项（保持镜像干净、加速构建）
+node_modules
+.next
+data
+.env
+.env.local
+.git
+.gitignore
+*.log
+.DS_Store
+README.md
+DEPLOY.md
+scripts
+.vscode
+public/cross-sections
