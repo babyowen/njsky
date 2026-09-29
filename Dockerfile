@@ -9,19 +9,24 @@ WORKDIR /app
 
 # better-sqlite3 是原生模块。默认安装会从 GitHub Releases 下载预编译二进制，
 # 国内 VPS 连不上 GitHub 会失败——这里装好编译工具，走源码编译兜底。
-RUN apt-get update \
+# apt 源换阿里云（Debian 官方源在国内很慢；可用 --build-arg APT_MIRROR=... 覆盖）
+ARG APT_MIRROR=mirrors.aliyun.com
+RUN sed -i "s@deb.debian.org@${APT_MIRROR}@g; s@security.debian.org/debian-security@${APT_MIRROR}/debian-security@g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+ && apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # npm 走国内镜像（可用 --build-arg NPM_REGISTRY=... 覆盖）
 ARG NPM_REGISTRY=https://registry.npmmirror.com
-RUN npm config set registry "$NPM_REGISTRY"
+RUN npm config set registry "$NPM_REGISTRY" \
+ && npm config set fetch-retries 5 \
+ && npm config set fetch-retry-mintimeout 10000
 
 # 强制从源码编译，避免安装时卡在无法访问的 GitHub 二进制下载
 ENV npm_config_build_from_source=true
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 
 ############ 2) 构建层：编译 Next.js ############
 FROM node:22-bookworm-slim AS builder
