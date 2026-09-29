@@ -33,12 +33,11 @@
 ## 二、获取代码
 
 ### 方式 A（推荐，更新方便）：用 Gitee 仓库
-在宝塔终端执行：
+在宝塔终端执行（公开仓库，HTTPS 匿名克隆即可）：
 ```bash
 cd /www/wwwroot
-git clone <你的 Gitee 仓库地址> njsky
-cd njsky            # 若仓库根目录就是项目本身
-# 或：cd njsky/web   # 若仓库里 web/ 才是项目目录
+git clone https://gitee.com/babyowen/njsky.git njsky
+cd njsky            # 仓库根目录就是项目本身
 ```
 
 ### 方式 B：本地打包上传
