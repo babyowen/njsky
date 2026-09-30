@@ -1,8 +1,8 @@
 // 达标推送：飞书 OpenAPI（bot 身份）→ 单聊卡片
 //
-// 设计（2026-09 与用户确认）：**采集即触发，达标就推**，不做去重、不看数据是否变化。
-//   采集本身有节制（固定 02/09/14/21 整点 + 临场窗口，一天约 6 次），所以"每次采集后
-//   把达标的都推一遍"天然不会轰炸；临场窗口那次采集即天然承担"临场提醒"。
+// 设计（2026-09 与用户确认）：**每次采集只发一张汇总卡**，把所有达标的火烧云事件
+//   合并到一张卡片里说清楚，不再一个事件发一条（避免一次推好几条）。
+//   水晶天独立一张（蓝色卡片）。
 //   event_state 快照仅用于在卡片里标注"较上次上调/持平/下调"，不参与推送判定。
 import { env } from './env'
 import {
@@ -20,18 +20,27 @@ const PUSH_RANK_MIN = () => scoreToRank(env.PUSH_THRESHOLD)
 /** 水晶天推送的最低等级（2=水晶天） */
 const CRYSTAL_RANK_MIN = 2
 
-/** 采集完成后调用：把当前达标的火烧云事件 + 水晶天各推一条。返回推送条数。 */
+/** 采集完成后调用：火烧云发一张汇总卡（若有达标）+ 水晶天一张（若达标）。返回推送条数。 */
 export async function pushOnCollect(nowMs = Date.now()): Promise<number> {
   const [a, b] = await Promise.all([pushFirecloud(nowMs), pushCrystal(nowMs)])
   return a + b
 }
 
-// ---------- 火烧云（红/橙卡片） ----------
+// ---------- 火烧云（红/橙卡片）：一次采集最多一张汇总卡 ----------
+
+interface QualifiedEvent {
+  ev: EventRow
+  views: SourceView[]
+  fused: FusedView
+  rank: number
+  prevRank: number | null
+}
 
 async function pushFirecloud(nowMs: number): Promise<number> {
   const events = eventsBetween(nowMs, nowMs + 3 * 24 * 3600_000) // 未来 3 天
   const minRank = PUSH_RANK_MIN()
-  let pushed = 0
+  const qualified: QualifiedEvent[] = []
+
   for (const ev of events) {
     const views = toSourceViews(latestReadings(ev.id))
     const fused = fuse(views)
@@ -40,54 +49,73 @@ async function pushFirecloud(nowMs: number): Promise<number> {
     const key = `event:${ev.id}`
     const prev = getEventState(key)
     setEventState(key, rank, fused.score, nowMs) // 记录快照供下次对比
-    if (rank < minRank) continue                 // 不达标不推；达标就推（不管变没变）
-    await sendFirecloud(ev, views, fused, prev?.last_rank ?? null, nowMs)
-    pushed++
+    if (rank < minRank) continue                 // 不达标跳过
+    qualified.push({ ev, views, fused, rank, prevRank: prev?.last_rank ?? null })
   }
-  return pushed
+
+  if (qualified.length === 0) return 0
+  await sendFirecloudDigest(qualified, nowMs)
+  return 1 // 无论几个事件达标，都只发一张汇总卡
 }
 
-async function sendFirecloud(
-  ev: EventRow, views: SourceView[], fused: FusedView, prevRank: number | null, nowMs: number,
-): Promise<void> {
-  const isSunset = ev.event_type === '日落'
-  const icon = isSunset ? '🌇' : '🌅'
-  const score = fused.score ?? 0
-  const rank = scoreToRank(score)
-  const level = scoreToLevel(score).label
-  const when = relativeDayText(ev.event_time, nowMs)
+/** 火烧云汇总卡：把所有达标事件列在一张卡片里 */
+async function sendFirecloudDigest(list: QualifiedEvent[], nowMs: number): Promise<void> {
+  // 标题：取最强等级，标明事件数
+  const maxRank = Math.max(...list.map(q => q.rank))
+  const maxLevel = scoreToLevel(rankToScoreFloor(maxRank)).label
+  const hasSunset = list.some(q => q.ev.event_type === '日落')
+  const icon = hasSunset ? '🌇' : '🌅'
+  const title = `${icon} 南京火烧云提醒 · ${maxLevel}${list.length > 1 ? `（${list.length} 场）` : ''}`
 
-  // 变化提示：上调 / 下调 / 持平 / 首次
-  let changeHint = ''
-  if (prevRank !== null) {
-    const prevLevel = scoreToLevel(rankToScoreFloor(prevRank)).label
-    if (rank > prevRank) changeHint = `（较上次上调：${prevLevel} → ${level}）`
-    else if (rank < prevRank) changeHint = `（较上次下调：${prevLevel} → ${level}）`
-    else changeHint = `（与上次持平：${level}）`
+  const blocks: string[] = []
+  for (const q of list) {
+    const { ev, views, fused, rank, prevRank } = q
+    const isSunset = ev.event_type === '日落'
+    const icon2 = isSunset ? '🌇' : '🌅'
+    const score = fused.score ?? 0
+    const level = scoreToLevel(score).label
+    const when = relativeDayText(ev.event_time, nowMs)
+
+    // 变化提示：上调 / 下调 / 持平 / 首次
+    let changeHint = ''
+    if (prevRank !== null) {
+      const prevLevel = scoreToLevel(rankToScoreFloor(prevRank)).label
+      if (rank > prevRank) changeHint = ` · 较上次上调(${prevLevel}→${level})`
+      else if (rank < prevRank) changeHint = ` · 较上次下调(${prevLevel}→${level})`
+      else changeHint = ' · 与上次持平'
+    }
+
+    blocks.push(`${icon2} **${when}${ev.event_type} · ${score.toFixed(2)}（${level}）**${changeHint}`)
+    blocks.push(`${ev.event_type} ${fmtDateTime(ev.event_time)}${countdownText(ev.event_time, nowMs) ? `（约 ${countdownText(ev.event_time, nowMs)}后）` : ''}`)
+
+    // 各源指数一行列全
+    const srcLine = views.filter(v => v.score !== null)
+      .map(v => `${v.sourceName} ${v.score?.toFixed(2)}`)
+      .join(' · ')
+    if (srcLine) blocks.push(srcLine)
+
+    // 摄影时段
+    if (isSunset) {
+      const parts: string[] = []
+      if (ev.golden) parts.push(`黄金 ${fmtTime(ev.golden)} 起`)
+      if (ev.blue) parts.push(`蓝调至 ${fmtTime(ev.blue)}`)
+      if (parts.length > 0) blocks.push(parts.join(' · '))
+    } else {
+      const parts: string[] = []
+      if (ev.blue) parts.push(`蓝调 ${fmtTime(ev.blue)} 起`)
+      if (ev.golden) parts.push(`黄金至 ${fmtTime(ev.golden)}`)
+      if (parts.length > 0) blocks.push(parts.join(' · '))
+    }
+
+    // AOD（取任一有的源）
+    const aod = views.find(v => v.aod !== null)?.aod ?? null
+    if (aod !== null) blocks.push(`AOD ${aod}（${aodLabel(aod)}）`)
+
+    blocks.push('') // 事件间空行
   }
-  const title = `${icon} 南京${when}${ev.event_type}可能「${level}」`
-  const countdown = countdownText(ev.event_time, nowMs)
 
-  const lines = [
-    `**综合指数 ${score.toFixed(2)}（${level}）**${changeHint}`,
-    ...(countdown ? [`距现在约 ${countdown}`] : []),
-    '',
-    ...views.filter(v => v.score !== null).map(v => `- ${v.sourceName}：${v.score?.toFixed(2)} ${scoreToLevel(v.score ?? 0).label}`),
-    '',
-    `${ev.event_type}时间：${fmtDateTime(ev.event_time)}`,
-  ]
-  if (isSunset) {
-    if (ev.golden) lines.push(`黄金时刻：${fmtTime(ev.golden)} 起`)
-    if (ev.blue) lines.push(`蓝调时刻：至 ${fmtTime(ev.blue)}`)
-  } else {
-    if (ev.blue) lines.push(`蓝调时刻：${fmtTime(ev.blue)} 起`)
-    if (ev.golden) lines.push(`黄金时刻：至 ${fmtTime(ev.golden)}`)
-  }
-  const aod = views.find(v => v.aod !== null)?.aod ?? null
-  if (aod !== null) lines.push(`气溶胶 AOD：${aod}（${aodLabel(aod)}）`)
-  lines.push('', '数据来源：SunsetBot / 本站自算（Open-Meteo）。预测仅供参考，出门前请再看一眼实时云图。')
-
-  await sendFeishuCard(title, lines.join('\n'), isSunset ? 'red' : 'orange')
+  blocks.push('数据来源：SunsetBot / 本站自算（Open-Meteo）。预测仅供参考，出门前请再看一眼实时云图。')
+  await sendFeishuCard(title, blocks.join('\n').trim(), 'red')
 }
 
 // ---------- 水晶天（蓝色卡片） ----------
