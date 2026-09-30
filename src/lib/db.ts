@@ -74,8 +74,6 @@ export interface CollectLogRow {
 
 // ---------- 连接与建表 ----------
 
-const dbPath = env.DB_PATH || path.join(process.cwd(), 'data', 'njsky.db')
-
 function createDb(): Database.Database {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const d = new Database(dbPath)
@@ -178,9 +176,32 @@ CREATE INDEX IF NOT EXISTS idx_collect_logs_time ON collect_logs(finished_at);
   return d
 }
 
+// 构建期（Next.js 收集页面数据 / 静态生成）会起多个 worker 进程并行 import 本模块，
+// 若在此时打开真实 SQLite 文件会造成多进程锁冲突（SQLITE_BUSY）。
+// 构建期不需要真实数据——返回一个惰性空实现，运行时才真正打开数据库。
+const IS_BUILD_PHASE = process.env.NEXT_PHASE === 'phase-production-build'
+
+const dbPath = env.DB_PATH || path.join(process.cwd(), 'data', 'njsky.db')
+
+/** 构建期使用的空实现：所有 prepare 调用返回安全的空结果，绝不触碰真实文件。 */
+function createStubDb(): Database.Database {
+  const empty = {
+    run: () => ({ changes: 0, lastInsertRowid: 0 }),
+    get: () => undefined,
+    all: () => [],
+  }
+  return {
+    prepare: () => empty,
+    pragma: () => undefined,
+    exec: () => undefined,
+    transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args),
+  } as unknown as Database.Database
+}
+
 // 单例：缓存到 globalThis，避免 next dev 热重载时重复建立连接/重复跑建表
 const g = globalThis as unknown as { __njskyDb?: Database.Database }
-export const db: Database.Database = g.__njskyDb ?? (g.__njskyDb = createDb())
+export const db: Database.Database =
+  g.__njskyDb ?? (g.__njskyDb = IS_BUILD_PHASE ? createStubDb() : createDb())
 
 // ---------- 事件 ----------
 
