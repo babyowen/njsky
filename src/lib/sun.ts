@@ -46,6 +46,17 @@ function validMs(d: Date | undefined): number | null {
  * 北京时间 00:00-08:00 期间 UTC 仍在前一天，会导致事件整体错位一天。
  * 本站固定中国城市（东八区），故用城市日期键 + 东八区正午定位。
  */
+/**
+ * 事件时刻的太阳方位角（罗盘度数：北0 东90 南180 西270）。
+ * 火烧云光路沿此方向延伸：日出事件往东偏南/北采样，日落事件往西采样。
+ * suncalc 的 azimuth 从正南起算、向西为正（弧度），换算为罗盘方位。
+ */
+export function sunBearing(eventTime: number): number | null {
+  const pos = SunCalc.getPosition(new Date(eventTime), env.CITY_LAT, env.CITY_LON)
+  if (!pos || Number.isNaN(pos.azimuth)) return null
+  return (pos.azimuth * 180 / Math.PI + 180) % 360
+}
+
 export function upcomingSunEvents(now = new Date()): SunEvent[] {
   const todayKey = localDateKey(now.getTime())          // 城市时区下的"今天"
   const baseNoon = Date.parse(`${todayKey}T12:00:00+08:00`)

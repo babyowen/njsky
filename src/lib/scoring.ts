@@ -8,9 +8,16 @@
 //
 // 输出与 SunsetBot 同量纲的 0-2.5 指数，方便多源并排对比。
 //
-// 指数 = 2.5 × 幕布 × 透光 × 通透   （三个 0-1 因子相乘，任一为 0 即归零）
+// 指数 = 2.5 × 幕布 × 透光 × 通透 × 光路   （四个 0-1 因子相乘，任一为 0 即归零）
 
 import { scoreToLevel } from './levels'
+
+/** 太阳方向光路上的一个采样点（按距离升序传入，距离定义见 openmeteo.PATH_DIST_KM） */
+export interface PathCloudInput {
+  cloudLow: number | null
+  cloudMid: number | null
+  cloudHigh: number | null
+}
 
 export interface FactorInput {
   cloudLow: number | null    // %
@@ -19,6 +26,8 @@ export interface FactorInput {
   visibility: number | null  // 米
   humidity: number | null    // %
   aod: number | null
+  /** 太阳方位角方向 80/200/400km 处的云量；缺省或为空则不启用光路因子（=1） */
+  path?: Array<PathCloudInput | null> | undefined
 }
 
 export interface ScoreDetail {
@@ -26,6 +35,7 @@ export interface ScoreDetail {
   canvasScore: number  // 幕布得分 0-1
   blockFactor: number  // 低云挡光因子 0-1
   clarity: number      // 通透度 0-1
+  horizonFactor: number // 光路因子：太阳方向云墙越少越高 0-1
 }
 
 export interface ScoreResult {
@@ -74,8 +84,27 @@ export function computeLocalScore(f: FactorInput): ScoreResult | null {
   const humFactor = f.humidity !== null && f.humidity >= 85 ? 0.7 : 1
   const clarity = clamp((0.6 * aod + 0.4 * visScore) * humFactor)
 
-  // 三因子相乘，不设保底：任一条件不成立（阴天 / 重度雾霾）即不可能有火烧云
-  const score = Math.round(2.5 * canvasScore * blockFactor * clarity * 1000) / 1000
+  // ④ 光路：火烧云是"被低角度阳光点亮的云"，阳光以掠射角从太阳方向数百公里外射来。
+  //    地球曲率+折射下光线高度随距离爬升：80km 处≈0.4km（只有低云能挡）、200km≈2.4km
+  //    （低/中云挡）、400km≈9.4km（中/高云挡）。任一处是 100% 云墙 → 光路切断 → 归零。
+  //    采样点数据缺失时跳过该点，不因缺数据误伤；指数近处大远处小（近处云墙更致命）。
+  let horizonFactor = 1
+  if (f.path && f.path.length > 0) {
+    const exponents = [0.5, 0.4, 0.3]
+    f.path.forEach((p, i) => {
+      if (!p || horizonFactor === 0) return
+      const layers = i === 0 ? [p.cloudLow]
+        : i === 1 ? [p.cloudLow, p.cloudMid]
+        : [p.cloudMid, p.cloudHigh]
+      const vals = layers.filter((v): v is number => v !== null)
+      if (vals.length === 0) return
+      horizonFactor *= Math.pow(1 - clamp(Math.max(...vals) / 100), exponents[i] ?? 0.3)
+    })
+    horizonFactor = clamp(horizonFactor)
+  }
+
+  // 四因子相乘，不设保底：任一条件不成立（阴天 / 重度雾霾 / 光路云墙）即不可能有火烧云
+  const score = Math.round(2.5 * canvasScore * blockFactor * clarity * horizonFactor * 1000) / 1000
 
   return {
     score,
@@ -85,6 +114,7 @@ export function computeLocalScore(f: FactorInput): ScoreResult | null {
       canvasScore: Math.round(canvasScore * 100) / 100,
       blockFactor: Math.round(blockFactor * 100) / 100,
       clarity: Math.round(clarity * 100) / 100,
+      horizonFactor: Math.round(horizonFactor * 100) / 100,
     },
   }
 }

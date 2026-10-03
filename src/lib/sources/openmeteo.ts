@@ -93,8 +93,8 @@ export async function fetchHourlyFactors(lat: number, lon: number): Promise<Hour
 }
 
 /** 取距离目标时间最近的整点数据 */
-export function nearestHourly(points: HourlyPoint[], targetMs: number): HourlyPoint | null {
-  let best: HourlyPoint | null = null
+export function nearestHourly<T extends { time: number }>(points: T[], targetMs: number): T | null {
+  let best: T | null = null
   let bestDiff = Infinity
   for (const p of points) {
     const d = Math.abs(p.time - targetMs)
@@ -102,4 +102,64 @@ export function nearestHourly(points: HourlyPoint[], targetMs: number): HourlyPo
   }
   // 超过 90 分钟视为不匹配
   return bestDiff <= 90 * 60_000 ? best : null
+}
+
+// ---------- 光路采样（沿太阳方位角的云墙检测） ----------
+
+/** 光路采样距离（km）：掠射阳光在 80km 处约 0.4km 高、200km 约 2.4km、400km 约 9.4km */
+export const PATH_DIST_KM = [80, 200, 400] as const
+
+export interface PathPoint {
+  time: number               // epoch ms 整点
+  cloudLow: number | null
+  cloudMid: number | null
+  cloudHigh: number | null
+}
+
+export interface PathSample {
+  distKm: number
+  points: PathPoint[]
+}
+
+/** 沿方位角 bearing 偏移 d 公里后的坐标 */
+function offsetLatLon(lat: number, lon: number, bearingDeg: number, dKm: number): [number, number] {
+  const brg = bearingDeg * Math.PI / 180
+  const dLat = dKm * Math.cos(brg) / 111.32
+  const dLon = dKm * Math.sin(brg) / (111.32 * Math.cos(lat * Math.PI / 180))
+  return [Math.round((lat + dLat) * 1000) / 1000, Math.round((lon + dLon) * 1000) / 1000]
+}
+
+/**
+ * 拉取太阳方向光路上的分层云量：一次请求传多组坐标（Open-Meteo 返回数组），
+ * 采样点位于观测点沿 bearing 方向 80/200/400 km 处。
+ */
+export async function fetchPathCloud(lat: number, lon: number, bearingDeg: number): Promise<PathSample[]> {
+  const coords = PATH_DIST_KM.map(d => offsetLatLon(lat, lon, bearingDeg, d))
+  const url = `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${coords.map(c => c[0]).join(',')}&longitude=${coords.map(c => c[1]).join(',')}` +
+    `&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=Asia%2FShanghai`
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(20000) })
+  if (!res.ok) throw new Error(`open-meteo path HTTP ${res.status}`)
+  const json = (await res.json()) as { hourly?: OmHourly } | Array<{ hourly?: OmHourly }>
+  const locs = Array.isArray(json) ? json : [json]
+
+  return PATH_DIST_KM.map((d, i) => {
+    const h = locs[i]?.hourly ?? {}
+    const times = h.time ?? []
+    const points: PathPoint[] = []
+    for (let j = 0; j < times.length; j++) {
+      const ts = times[j]
+      if (!ts) continue
+      const t = parseOpenMeteoTime(ts)
+      if (t === null) continue
+      points.push({
+        time: t,
+        cloudLow: pick(h.cloud_cover_low, j),
+        cloudMid: pick(h.cloud_cover_mid, j),
+        cloudHigh: pick(h.cloud_cover_high, j),
+      })
+    }
+    return { distKm: d, points }
+  })
 }

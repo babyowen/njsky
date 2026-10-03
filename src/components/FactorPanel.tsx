@@ -120,10 +120,13 @@ export default function FactorPanel({ events, current }: { events: ForecastEvent
           <div className="mb-2 font-mono-num text-[11px] uppercase tracking-[0.25em] text-slate-400">
             本站自算指数分解（{f.score !== null ? f.score.toFixed(2) : '—'}）
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <DetailBar name="幕布" hint="中高云适宜度" value={f.detail.canvasScore} />
             <DetailBar name="透光" hint="低云遮挡越少越高" value={f.detail.blockFactor} />
             <DetailBar name="通透" hint="AOD/能见度/湿度" value={f.detail.clarity} />
+            {typeof f.detail.horizonFactor === 'number' && (
+              <DetailBar name="光路" hint="太阳方向云墙越少越高" value={f.detail.horizonFactor} />
+            )}
           </div>
         </div>
       )}

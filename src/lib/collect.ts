@@ -4,12 +4,12 @@ import {
   upsertEvent, findEventNear, insertReading, upsertFactors,
   replaceHourly, prune, setMeta, insertCollectLog, type EventRow,
 } from './db'
-import { upcomingSunEvents } from './sun'
+import { upcomingSunEvents, sunBearing } from './sun'
 import { scoreToLevel } from './levels'
 import { computeLocalScore } from './scoring'
 import { fetchSunsetbot } from './sources/sunsetbot'
 import { fetchGeovis } from './sources/geovis'
-import { fetchHourlyFactors, nearestHourly } from './sources/openmeteo'
+import { fetchHourlyFactors, fetchPathCloud, nearestHourly, type PathSample } from './sources/openmeteo'
 import { localDateKey } from './time'
 
 export interface CollectSummary {
@@ -118,12 +118,38 @@ async function doCollectOnce(): Promise<CollectSummary> {
     })))
     nHourly = points.length
 
+    // 光路采样：按事件时刻的太阳方位角（5° 桶）分组，同组共享一次请求（日出/日落各一次）。
+    // 单个方向失败只记错误、该方向事件退化为不带光路因子（horizonFactor=1），不影响本地格点评分。
+    const bearingKeyOf = new Map<number, number>()  // event_id → 方位角桶
+    const groupBearing = new Map<number, number>()  // 桶 → 代表方位角
+    for (const ev of eventRows) {
+      const b = sunBearing(ev.event_time)
+      if (b === null) continue
+      const key = Math.round(b / 5) * 5
+      bearingKeyOf.set(ev.id, key)
+      if (!groupBearing.has(key)) groupBearing.set(key, b)
+    }
+    const pathSamples = new Map<number, PathSample[]>()
+    for (const [key, bearing] of groupBearing) {
+      try {
+        pathSamples.set(key, await fetchPathCloud(env.CITY_LAT, env.CITY_LON, bearing))
+      } catch (e) {
+        errors.push(`openmeteo-path(${key}°): ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
     for (const ev of eventRows) {
       const p = nearestHourly(points, ev.event_time)
       if (!p) continue
+      const samples = pathSamples.get(bearingKeyOf.get(ev.id) ?? -1)
+      const path = samples?.map(s => {
+        const pp = nearestHourly(s.points, ev.event_time)
+        return pp ? { cloudLow: pp.cloudLow, cloudMid: pp.cloudMid, cloudHigh: pp.cloudHigh } : null
+      })
       const result = computeLocalScore({
         cloudLow: p.cloudLow, cloudMid: p.cloudMid, cloudHigh: p.cloudHigh,
         visibility: p.visibility, humidity: p.humidity, aod: p.aod,
+        path,
       })
       upsertFactors({
         event_id: ev.id,
