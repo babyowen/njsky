@@ -37,7 +37,7 @@
 ```bash
 cd /www/wwwroot
 git clone https://gitee.com/babyowen/njsky.git njsky
-cd njsky            # 仓库根目录就是项目本身
+cd njsky            # 仓库根目录就是项目本身（含 Dockerfile / docker-compose.yml）
 ```
 
 ### 方式 B：本地打包上传
@@ -63,7 +63,7 @@ mkdir -p data        # SQLite 数据目录
 ## 四、构建并启动
 
 ```bash
-cd /www/wwwroot/njsky/web      # 含 docker-compose.yml 的目录
+cd /www/wwwroot/njsky          # 仓库根目录，含 docker-compose.yml
 docker compose up -d --build
 docker compose logs -f         # 观察启动日志（Ctrl+C 只退出日志，不停止容器）
 ```
@@ -78,6 +78,9 @@ docker compose logs -f         # 观察启动日志（Ctrl+C 只退出日志，�
 ## 五、宝塔反向代理 + SSL
 
 1. 宝塔 → **网站** → 添加站点：域名填你的域名，其余默认（PHP 版本选纯静态即可）。
+   - 此时宝塔会生成一个占位站点目录（如 `njsky-web-none`，纯静态站点 PHP=none 的命名），
+     **它不放任何代码**：nginx 里 `location /` 全量反代到 3002 容器，
+     该目录仅用于 `.well-known` 证书续期验证；SSL 证书在 `/www/server/panel/vhost/cert/<域名>/`。
 2. 进入该站点 → **反向代理** → 添加：
    - 代理名称：`njsky`
    - 目标 URL：`http://127.0.0.1:3002`
@@ -91,7 +94,7 @@ docker compose logs -f         # 观察启动日志（Ctrl+C 只退出日志，�
 ## 六、日常更新
 
 ```bash
-cd /www/wwwroot/njsky/web
+cd /www/wwwroot/njsky
 git pull
 docker compose up -d --build
 ```
@@ -103,7 +106,7 @@ docker compose up -d --build
 
 只需备份 **`data/njsky.db`**。SQLite 使用 WAL 模式，建议这样备份以避免写入中途：
 ```bash
-cd /www/wwwroot/njsky/web
+cd /www/wwwroot/njsky
 docker compose stop
 cp data/njsky.db /path/to/backup/njsky-$(date +%F).db
 docker compose start
